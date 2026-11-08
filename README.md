@@ -50,4 +50,5 @@ See [Releases](../../releases/latest): `Caramel-macos-universal.dmg`, `caramel-l
 | Play | F9 | play / stop the selected macro |
 | | F10 | cancel |
 
-Speed, repeat count and the light/dark theme are under **Prefs**.
+Hotkeys are the defaults; change them under **Prefs → Hotkeys**. Speed, repeat count and the theme
+(Dark, Light, Caramel) are there too.
