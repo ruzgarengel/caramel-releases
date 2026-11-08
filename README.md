@@ -16,12 +16,13 @@ curl -fsSL https://ruz.one/caramel.sh | bash
 irm https://ruz.one/caramel.ps1 | iex
 ```
 
-Run the same command again to update.
+Run the same command again to update or repair an installation: it stops Caramel, replaces the old version
+and fixes the permissions.
 
 The installer downloads the latest release, verifies its SHA-256 checksum and sets everything up:
 - **macOS**: installs `Caramel.app` into Applications and asks for the Input Monitoring and Accessibility permissions.
-- **Linux**: installs into `~/.local`, adds an app menu entry, and (with one `sudo` prompt) adds you to the `input`
-  group and sets up `/dev/uinput`. You only need to log out and back in once after that.
+- **Linux**: installs into `~/.local`, adds an app menu entry and, with one `sudo` prompt, installs a udev rule that
+  gives your user access to input devices and `/dev/uinput` right away (no re-login).
 - **Windows**: installs into `%LOCALAPPDATA%\Programs\Caramel` with a Start menu shortcut and a `caramel` command.
 
 ## Uninstall

@@ -132,21 +132,51 @@ macos() {
 }
 
 # ───────────────────────────── Linux ─────────────────────────────
+# `uaccess` gives the logged-in user access right away (no re-login); the
+# `input` group is a fallback for systems without systemd-logind. The file must
+# sort before 73-seat-late.rules for `uaccess` to apply, hence 70-.
+UDEV_FILE=/etc/udev/rules.d/70-caramel.rules
+UDEV_RULE='KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="input", MODE="0660", TAG+="uaccess", OPTIONS+="static_node=uinput"
+SUBSYSTEM=="input", KERNEL=="event*", TAG+="uaccess"'
+
+stop_caramel() {
+    pkill -x caramel >/dev/null 2>&1 || return 0
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        pgrep -x caramel >/dev/null 2>&1 || return 0
+        sleep 0.2
+    done
+    pkill -9 -x caramel >/dev/null 2>&1 || true
+}
+
+# Can this user read the keyboards and write /dev/uinput?
+input_ok() {
+    [ -w /dev/uinput ] || return 1
+    local ev found=0
+    for ev in $(grep -E '^H: Handlers=.*kbd' /proc/bus/input/devices 2>/dev/null | grep -oE 'event[0-9]+'); do
+        found=1
+        [ -r "/dev/input/$ev" ] || return 1
+    done
+    [ "$found" = 1 ]
+}
+
 linux() {
     local prefix="${PREFIX:-$HOME/.local}"
     local sudo=sudo
     [ "$(id -u)" = 0 ] && sudo=
+    local files=("$prefix/bin/caramel" "$prefix/share/applications/caramel.desktop"
+                 "$prefix/share/icons/hicolor/256x256/apps/caramel.png")
 
     if [ "$UNINSTALL" = 1 ]; then
         say "removing Caramel"
-        pkill -x caramel >/dev/null 2>&1 || true
-        rm -f "$prefix/bin/caramel" "$prefix/share/applications/caramel.desktop" \
-              "$prefix/share/icons/hicolor/256x256/apps/caramel.png"
+        stop_caramel
+        rm -f "${files[@]}"
         ok "removed (your macros are kept in ~/.local/share/caramel)"
-        if [ -f /etc/udev/rules.d/99-caramel.rules ] && ask "Also remove the uinput udev rule and module config"; then
-            $sudo rm -f /etc/udev/rules.d/99-caramel.rules /etc/modules-load.d/caramel.conf
-            $sudo udevadm control --reload 2>/dev/null || true
-            ok "removed udev rule"
+        if [ -f "$UDEV_FILE" ] || [ -f /etc/udev/rules.d/99-caramel.rules ]; then
+            if ask "Also remove Caramel's input permission rules"; then
+                $sudo rm -f "$UDEV_FILE" /etc/udev/rules.d/99-caramel.rules /etc/modules-load.d/caramel.conf
+                $sudo udevadm control --reload 2>/dev/null || true
+                ok "removed udev rules"
+            fi
         fi
         return
     fi
@@ -154,11 +184,16 @@ linux() {
     say "installing Caramel for Linux ($ARCH)"
     local asset="caramel-linux-$ARCH.tar.gz"
     fetch "$asset"
-    tar -xzf "$TMP/$asset" -C "$TMP"
+    tar --warning=no-unknown-keyword -xzf "$TMP/$asset" -C "$TMP" 2>/dev/null || tar -xzf "$TMP/$asset" -C "$TMP"
     local src="$TMP/caramel-linux-$ARCH"
     [ -x "$src/caramel" ] || die "unexpected archive layout"
 
-    pkill -x caramel >/dev/null 2>&1 || true
+    # Replace any previous installation cleanly.
+    if [ -e "$prefix/bin/caramel" ] || pgrep -x caramel >/dev/null 2>&1; then
+        stop_caramel
+        rm -f "${files[@]}"
+        ok "removed the previous installation"
+    fi
     install -Dm755 "$src/caramel" "$prefix/bin/caramel"
     sed "s|^Exec=caramel|Exec=$prefix/bin/caramel|" "$src/caramel.desktop" > "$TMP/caramel.desktop"
     install -Dm644 "$TMP/caramel.desktop" "$prefix/share/applications/caramel.desktop"
@@ -187,26 +222,39 @@ linux() {
         fi
     fi
 
-    # Permissions: read /dev/input (input group) and write /dev/uinput.
-    local in_group=0
-    id -nG "$USER" | tr ' ' '\n' | grep -qx input && in_group=1
-    if [ "$in_group" = 1 ] && [ -w /dev/uinput ]; then
+    # Input permissions. Also re-applied when the installed rule is outdated.
+    local rule_current=0
+    [ -f "$UDEV_FILE" ] && [ "$(cat "$UDEV_FILE")" = "$UDEV_RULE" ] && rule_current=1
+    if [ "$rule_current" = 1 ] && input_ok; then
         ok "input permissions already set up"
     else
         echo >&2
-        say "Caramel needs access to input devices (one-time, uses sudo):"
-        echo "    - add $USER to the 'input' group (to record)" >&2
-        echo "    - allow the 'input' group to use /dev/uinput (to play back)" >&2
+        say "Caramel needs access to your input devices (uses sudo, no re-login needed):"
+        echo "    - read keyboard/mouse events (to record)" >&2
+        echo "    - write /dev/uinput (to play back)" >&2
         if ask "Set this up now"; then
-            [ "$in_group" = 1 ] || $sudo usermod -aG input "$USER"
-            echo 'KERNEL=="uinput", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"' \
-                | $sudo tee /etc/udev/rules.d/99-caramel.rules >/dev/null
+            # Remove rules from older Caramel versions / manual setup.
+            $sudo rm -f /etc/udev/rules.d/99-caramel.rules
+            if [ -f /etc/modules-load.d/uinput.conf ] && [ "$(tr -d '[:space:]' </etc/modules-load.d/uinput.conf)" = uinput ]; then
+                $sudo rm -f /etc/modules-load.d/uinput.conf
+            fi
+            printf '%s\n' "$UDEV_RULE" | $sudo tee "$UDEV_FILE" >/dev/null
             echo uinput | $sudo tee /etc/modules-load.d/caramel.conf >/dev/null
             $sudo modprobe uinput || true
             $sudo udevadm control --reload || true
-            $sudo udevadm trigger || true
-            ok "permissions configured"
-            [ "$in_group" = 1 ] || warn "log out and back in once so the group change takes effect"
+            $sudo udevadm trigger --action=change --subsystem-match=input --subsystem-match=misc || true
+            $sudo udevadm settle --timeout=5 2>/dev/null || true
+            # Grant this session access immediately as well (udev covers future boots).
+            if command -v setfacl >/dev/null 2>&1; then
+                $sudo setfacl -m "u:$USER:rw" /dev/uinput 2>/dev/null || true
+                for d in /dev/input/event*; do $sudo setfacl -m "u:$USER:r" "$d" 2>/dev/null || true; done
+            fi
+            id -nG "$USER" | tr ' ' '\n' | grep -qx input || $sudo usermod -aG input "$USER" || true
+            if input_ok; then
+                ok "input permissions configured"
+            else
+                warn "permissions are set, but this session can't use them yet: log out and back in once"
+            fi
         else
             warn "skipped; run 'caramel setup' later for the commands"
         fi
@@ -216,7 +264,16 @@ linux() {
         ok "Hyprland detected: pixel-exact mouse recording via Hyprland IPC"
     fi
     echo >&2
-    say "done. Start it from your app menu or run: caramel"
+    if [ -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ]; then
+        say "done. Starting Caramel..."
+        if command -v setsid >/dev/null 2>&1; then
+            setsid -f "$prefix/bin/caramel" >/dev/null 2>&1 </dev/null || true
+        else
+            nohup "$prefix/bin/caramel" >/dev/null 2>&1 </dev/null &
+        fi
+    else
+        say "done. Start it from your app menu or run: caramel"
+    fi
 }
 
 case "$(uname -s)" in
